@@ -1,0 +1,210 @@
+---
+title: "STA 360: Code for Final Report"
+author: "Angela Yoon"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(rstanarm)
+library(dplyr)
+library(ggplot2)
+library(bayesplot)
+library(knitr)
+library("bayestestR")
+library('bridgesampling')
+```
+
+```{r}
+bc <- read.csv("data.csv")
+bc_mut <- mutate(bc,diagnosis=ifelse(diagnosis=="M",1,0))
+bc_final <- subset(bc_mut,select=-c(id,X))
+set.seed(12345)
+```
+
+## EDA
+
+### Perimeter vs Radius & Area vs Radius
+
+```{r}
+ggplot(data=bc,aes(x=radius_worst,y=perimeter_worst))+
+  geom_point()+
+  labs(title="Maximum Radius vs Maximum Perimeter",x="Maximum Radius",y="Maximum Perimeter")
+ggplot(data=bc,aes(x=radius_worst^2,y=area_worst))+
+  geom_point()+
+  labs(title="Maximum Radius Squared vs Maximum Area",x="Maximum Radius Squared",y="Maximum Area")
+```
+
+### Mean vs Maximum
+
+```{r}
+ggplot(data=bc,aes(x=radius_worst,y=radius_mean))+
+  geom_point()+
+  labs(title="Radius")
+ggplot(data=bc,aes(x=texture_worst,y=texture_mean))+
+  geom_point()+
+  labs(title="Texture")
+ggplot(data=bc,aes(x=perimeter_worst,y=perimeter_mean))+
+  geom_point()+
+  labs(title="Perimeter")
+ggplot(data=bc,aes(x=area_worst,y=area_mean))+
+  geom_point()+
+  labs(title="Area")
+ggplot(data=bc,aes(x=smoothness_worst,y=smoothness_mean))+
+  geom_point()+
+  labs(title="Smoothness")
+ggplot(data=bc,aes(x=compactness_worst,y=compactness_mean))+
+  geom_point()+
+  labs(title="Compactness")
+ggplot(data=bc,aes(x=symmetry_worst,y=symmetry_mean))+
+  geom_point()+
+  labs(title="Symmetry")
+ggplot(data=bc,aes(x=fractal_dimension_worst,y=fractal_dimension_mean))+
+  geom_point()+
+  labs(title="Fractal Dimension")
+```
+
+### Predictors vs Response
+
+```{r}
+ggplot(data=bc,aes(x=diagnosis,y=radius_worst))+
+  geom_boxplot()+
+  labs(title="Maximum Radius Distribution Grouped by Diagnosis", x="Diagnosis (B = benign, M = malignant)", y="Maximum Radius")
+
+ggplot(data=bc,aes(x=diagnosis,y=symmetry_worst))+
+  geom_boxplot()+
+  labs(title="Maximum Symmetry Distribution Grouped by Diagnosis", x="Diagnosis (B = benign, M = malignant)", y="Maximum Symmetry")
+
+ggplot(data=bc,aes(x=diagnosis,y=concavity_worst))+
+  geom_boxplot()+
+  labs(title="Maximum Concavity Distribution Grouped by Diagnosis", x="Diagnosis (B = benign, M = malignant)", y="Maximum Concavity")
+
+ggplot(data=bc,aes(x=diagnosis,y=concave.points_worst))+
+  geom_boxplot()+
+  labs(title="Maximum Concave Points Distribution Grouped by Diagnosis", x="Diagnosis (B = benign, M = malignant)", y="Maximum Concave Points")
+
+ggplot(data=bc,aes(x=diagnosis,y=smoothness_worst))+
+  geom_boxplot()+
+  labs(title="Maximum Smoothness Distribution Grouped by Diagnosis", x="Diagnosis (B = benign, M = malignant)", y="Maximum Smoothness")
+```
+
+
+## Model fitting
+
+### variable selection
+
+```{r}
+bc_initial <- stan_glm(diagnosis~.,data=bc_final,family=binomial(link="logit"))
+```
+```{r}
+initial_coeff <- posterior_interval(bc_initial)
+kable(initial_coeff,digits=4)
+```
+```{r}
+bc_improved <- stan_glm(diagnosis~radius_se+texture_worst+symmetry_worst+
+                          radius_worst+compactness_worst+concavity_worst+
+                          concave.points_worst+fractal_dimension_worst,
+                        data=bc_final,family=binomial(link="logit"))
+```
+```{r}
+kable(posterior_interval(bc_improved),digits=4)
+```
+```{r}
+bc_logit <- stan_glm(diagnosis~radius_worst+radius_se+texture_worst+
+                       symmetry_worst+concave.points_worst,data=bc_final,
+                     family=binomial(link="logit"),
+                     diagnostic_file=file.path(tempdir(),"logit.csv"))
+```
+```{r}
+posterior_interval(bc_logit)
+kable(posterior_interval(bc_logit),digits=4)
+bc_logit$coefficients
+```
+
+```{r}
+y <- bc_final$diagnosis
+yrep_logit <- posterior_predict(bc_logit, draws = 500)
+ppc_dens_overlay(y, yrep_logit[1:50, ])
+```
+
+```{r}
+loo_logit <- loo(bc_logit,save_psis = TRUE)
+```
+
+```{r}
+bc_null <- stan_glm(diagnosis~1,data=bc_final,family=binomial(link="logit"),
+                    diagnostic_file=file.path(tempdir(),"null.csv"))
+```
+```{r}
+loo_null <- loo(bc_null,save_psis=TRUE)
+loo_compare(loo_null,loo_logit)
+```
+
+### link function selection
+
+```{r}
+bc_probit <- stan_glm(diagnosis~radius_worst+radius_se+texture_worst+
+                        symmetry_worst+concave.points_worst,data=bc_final,
+                      family=binomial(link="probit"),
+                      diagnostic_file=file.path(tempdir(),"probit.csv"))
+```
+```{r}
+posterior_interval(bc_probit)
+bc_probit$coefficients
+```
+
+```{r}
+loo_probit <- loo(bc_probit,save_psis = TRUE)
+loo_compare(loo_logit,loo_probit)
+```
+
+```{r}
+bc_cloglog <- stan_glm(diagnosis~radius_worst+radius_se+texture_worst+
+                         symmetry_worst+concave.points_worst,data=bc_final,
+                       family=binomial(link="cloglog"),
+                       diagnostic_file=file.path(tempdir(),"cloglog.csv"))
+```
+```{r}
+posterior_interval(bc_cloglog)
+bc_cloglog$coefficients
+```
+```{r}
+loo_cloglog <- loo(bc_cloglog,save_psis = TRUE)
+loo_compare(loo_logit,loo_cloglog)
+```
+
+```{r}
+yrep_probit <- posterior_predict(bc_probit, draws = 500)
+ppc_dens_overlay(y, yrep_probit[1:50, ])
+```
+
+```{r}
+yrep_cloglog <- posterior_predict(bc_cloglog, draws = 500)
+ppc_dens_overlay(y, yrep_cloglog[1:50, ])
+```
+```{r}
+comparison <- bayesfactor_models(bc_logit,bc_probit,bc_cloglog,denominator = bc_null)
+comparison
+
+bayesfactor_models(bc_probit,bc_cloglog,denominator=bc_logit)
+```
+
+### final model
+
+```{r}
+summary(bc_cloglog)
+bc_cloglog %>%
+  mcmc_trace()
+```
+
+```{r}
+kable(posterior_interval(bc_cloglog),digits = 4)
+kable(bc_cloglog$coefficients)
+```
+
